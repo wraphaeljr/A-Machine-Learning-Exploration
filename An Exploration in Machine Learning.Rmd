@@ -1,0 +1,129 @@
+---
+title: "An Exploration in Machine Learning"
+author: wraphaeljr
+output: html_document
+---
+
+I'm pretty new to Machine Learning methodology. Consequently, I find it both amazing and a little scary. The performance of it's algorithms are impressive, and the concepts behind them are even more striking. It hardly seems surprising, then, that I was nervous about the prospect of implementing machine learning on my own. I recognize that my methods are far from perfect, but I hope the reader will forgive my mistakes and find some benefit in the analysis.
+
+###The Data
+
+For this exercise, I was given one dataset, already split into two parts: a training set and a test set. The data consisted of accelerometer measurements taken from 4 different locations (belt, forearm, arm, & dumbbell) on 6 human subjects performing barbell lifts in 5 different ways (1 correct method and 4 common mistakes).
+
+Many of the metrics in the dataset relate to pitch, roll, and yaw. The kurtosis, skewness, amplitude, minimum, maximum, mean, and standard deviations of these quantities are reported for each sensor. There are also other measurements such as gyroscopic acceleration.
+
+In accordance with standard procedure, the training dataset was the only dataset used for exploring the data and constructing prediction criteria.
+
+###Examining the Data
+
+The training dataset is fairly manageable, as far as datasets go. It has 160 columns (variables) and 19622 rows (observations). Still, the data are large enough (or my computer is slow enough) that it seemed like a bad idea to just pass the entire training set to a machine learning function. Out of curiosity, I tried it anyway, and several uneventful minutes later I found myself fully focused on dimension reduction.
+
+Eliminating variables from this dataset is a relatively straightforward task, but it seemed daunting at first. To give some insight into my initial view of the data, let's examine the structure of the first 15 columns (variables) of the dataset.
+
+```{r}
+training.raw <- read.csv("pml-training.csv")
+str(training.raw[,1:15])
+```
+
+The output is truncated and perhaps somewhat difficult to put in perspective (keep in mind there are actually 160 columns in the full training set). Consequently, my initial review of the details regarding the structure of the each variable was relatively awkward. On the bright side, even this somewhat clumsy search turned up 9 variables that seemed improperly formatted.
+
+```{r}
+str(training.raw[,c(14,17,26,89,92,101,127,130,139)])
+```
+
+Still, 9 variables isn't quite what I had in mind in terms of dimension reduction.  It was, however, a start, and I began storing column numbers of variables I wanted to omit in an object named "eliminate". As I got acclimated to the dataset I realized that I should probably discard the first seven variables of the dataset since they appeared to be identifier variables intended mainly for the use of the original researchers. While it's possible that these variables could inadvertently prove useful in explaining the variation in the training set, it seemed dangerous to apply any resulting prediction criteria to new data. The objective of our analysis was to determine if the accelerometer metrics could result in proper classification predictions, so subject-id tags and time-stamps needed to come out.
+
+```{r}
+names(training.raw[,1:7])
+```
+
+Now that I had eliminated the variables that sort of "leapt out" at me, I started wondering how I could pare down the variables further. I found myself a little worried about the factor variables in the dataset (I like using Principal Component Analysis, and I didn't want to have to create a bunch of dummy variables for the factor variables), but I didn't quite know how to address them.  I ended up creating a simple function to at least help me identify and index all of the factor variables in case I needed to do something with them later on.
+
+```{r}
+type <- character()
+for(j in 1:dim(training.raw)[2]){type[j] <- class(training.raw[,j])}
+type <- factor(type)
+#use which(type == "factor") to get index of factor variables
+summary(type)
+```
+
+In the mean time, I started looking for other variables I could remove.  I didn't want to accidentally throw away useful variables so I started trying to find variables that didn't seem particularly helpful. I realized I could probably eliminate variables with a large percentage of NA values.
+
+```{r}
+percent.NA <- sapply(training.raw, function(x) {sum(is.na(x))/length(x)})
+```
+
+To my surprise, I found that variables that contained any NAs at all had a huge percentage of NAs missing. This was a pleasant surprise and it made it easy to remove 67 variables.
+
+```{r}
+cbind(NAs.present = length(which(percent.NA > 0)), NAs.prevalent = length(which(percent.NA > 0.95)))
+```
+
+At this point, over half of the initial predictors had been removed, but I wanted to see if I could pare down the variables further. I used the caret package to apply the nearZeroVariance() function to the dataset and was able to remove another 24 variables (the nearZeroVariance() function detected 60 variables, but 36 of them had already been eliminated). The predictors that remained in consideration seemed like reasonable quantities to consider. (As an added bonus, I no longer needed dummy variables since all the factor variables had inadvertently been removed).
+
+```{r}
+eliminate <- c(1:7,14,17,26,89,92,101,127,130,139)
+eliminate <- c(eliminate, which(percent.NA > 0.50))
+library(caret, quietly = TRUE)
+var.winnow <- nearZeroVar(training.raw, saveMetrics = TRUE)
+eliminate <- c(eliminate, which(var.winnow$nzv))
+eliminate <- unique(eliminate)
+#omit "eliminated" predictors and the outcome variable
+names(training.raw)[-c(eliminate,160)]
+```
+
+###Developing Classification Criteria For Predicting
+
+Now down to 52 predictors, I felt I could probably try applying an algorithm to the data, so I turned my attention to classification methods. I had previously considered applying PCA to the data, but I decided to begin with a Random Forest methodology instead.  As it turned out, I ended up being satisfied with the results of Random Forests.  Still, for the sake of completion, I'll go ahead and apply PCA followed by Quadratic Discriminant Analysis to see those results. (Typically, I'd try multiple models to see which were effective, but I was having difficulty implementing some of the models and the results for random forests seemed so impressive that I got ahead of myself).
+
+```{r}
+library(caret, quietly = TRUE) ; library(MASS)
+processed.pca <- preProcess(training.raw[,-c(eliminate, 160)], method = "pca", thresh = 0.99)
+training.pca <- predict(processed.pca, training.raw[,-c(eliminate, 160)])
+qda.train <- train(training.raw$classe ~ . , data = training.pca, method = "qda")
+qda.train
+```
+
+Quadratic Discriminant Analysis performs pretty well, but I was eager to try Random Forests. I was worried about encountering significant computation time, though, so I tried to ascertain the effectiveness of different settings for the ntree parameter, with the hopes I wouldn't have to set it too high. To my surprise, I found that the procedure worked well on our training data with very few trees.
+
+```{r}
+library(randomForest, quietly = TRUE)
+rf.explore <- randomForest(classe ~ . , ntree = 10, do.trace = 1, data = training.raw[,-eliminate])
+plot(rf.explore)
+```
+
+I was hoping that the OOB error would be around 90%.  I did not expect to see such low error rates with so few trees.  The errors declined steadily through the first 10 trees, and since the computation time for 10 trees did not seem prohibitive (it took less than a minute), I figured I'd go ahead and try applying the alogrithm with 25 trees using the caret function.
+
+```{r, echo = FALSE, eval = FALSE}
+#for some reason, I didn't think to just keep using the randomForest option.
+#I think I was more used to using the caret package
+rf.model1 <- randomForest(classe ~ . , ntree = 25, data = training.raw[,-eliminate])
+```
+```{r}
+set.seed(91)
+rf.model0 <- train(classe ~ . , ntree = 25, data = training.raw[,-eliminate],  
+                   method = "rf", trControl = trainControl(method = "oob"))
+rf.model0$finalModel
+```
+
+The results were pretty good. The caret function determined there was an accuracy of about 99% corresponding to an 'mtry' parameter of 27 (mtry refers to the number of variables that get examined at each split of a classification tree).
+
+###Testing Predictive Ability
+
+While I suppose even higher accuracy could be achieved within our training set, I felt I had gotten surprisingly low OOB ("out-of-bag") error with the Random Forest implementation. [Note: "out-of-bag" error provides an estimate for out-of-sample error; low OOB error is a good sign and is consistent with our hope that the model can be of predictive use beyond our training dataset.  It may be of further interest to the reader to note that OOB error is basically a form of cross-validation; we leave some data out when developing classification criteria and then compare the known outcomes of the "left-out"" data with the predictions that would have resulted from our criteria. The result can be a useful indicator of general efficacy.] Since the performance metrics of our model seemed very good and I expected (read: hoped) the out-of-sample error would be more or less in line with our OOB of around 1%, I decided to go ahead and try predicting the outcomes for our test set.
+
+```{r}
+testing.raw <- read.csv("pml-testing.csv")
+test_predictions <- predict(rf.model0, testing.raw[,-c(eliminate,160)])
+test_predictions
+```
+
+Each prediction turned out to be correct! What a relief!
+
+----
+
+*This exploration of machine learning methods was undertaken in fulfillment of course requirements for the Practical Machine Learning course constructed by Johns Hopkins University and provided through Coursera. The exploration described in this article was only possible through the hard work and generosity of Velloso, Bulling, Gellersen, Ugulino, Fuks, and any persons that may have assisted them in their research. For more information about their project, please refer to the citations below:*
+
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+*Read more: <http://groupware.les.inf.puc-rio.br/har#ixzz3jQC9Ta6X>*
